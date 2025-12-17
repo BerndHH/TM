@@ -19,7 +19,7 @@ local MAX_DIG_ATTEMPTS = 10
 -- -- Inventareinstellungen --
 local SAPLING_SLOT = 5
 local BONE_MEAL_SLOT = 6
-local BONE_MEAL_APPLICATIONS = 4
+local MAX_BONE_MEAL_ATTEMPTS = 8
 
 -- -- Betriebsmodi --
 local MINIMUM_FUEL_LEVEL = 100
@@ -97,6 +97,12 @@ local function fellTree()
     turtle.digUp()
     if not safeUp() then return false end
     height = height + 1
+
+    -- Überprüfen, ob der Block unter dem aktuellen ein Log ist
+    local success, data = turtle.inspectDown()
+    if not success or not data or not string.find(data.name, "log") then
+        break
+    end
   end
   print("Baum mit Höhe " .. height .. " gefällt.")
   return height
@@ -112,27 +118,59 @@ local function returnToGroundLevel(treeHeight)
 end
 
 local function plantSapling()
-  if not turtle.detect() then
-    print("Pflanze neuen Setzling...")
-    if turtle.getItemCount(SAPLING_SLOT) == 0 then
-      print("Fehler: Keine Setzlinge mehr in Slot " .. SAPLING_SLOT)
-      return false
-    end
-
-    turtle.select(SAPLING_SLOT)
-    turtle.place()
-
-    if turtle.getItemCount(BONE_MEAL_SLOT) > 0 then
-      turtle.select(BONE_MEAL_SLOT)
-      for _ = 1, BONE_MEAL_APPLICATIONS do
-        pcall(turtle.place)
-      end
-    end
-    turtle.select(1)
-  else
+  -- Zuerst den Boden prüfen und Setzling pflanzen
+  if turtle.detect() then
     print("Boden ist blockiert, kann nicht pflanzen.")
     return false
   end
+
+  if turtle.getItemCount(SAPLING_SLOT) == 0 then
+    print("Fehler: Keine Setzlinge mehr in Slot " .. SAPLING_SLOT)
+    return false
+  end
+
+  turtle.select(SAPLING_SLOT)
+  turtle.place()
+  print("Setzling gepflanzt.")
+
+  -- Knochenmehl verwenden, falls vorhanden
+  if turtle.getItemCount(BONE_MEAL_SLOT) > 0 then
+    turtle.select(BONE_MEAL_SLOT)
+    print("Beginne mit dem Düngen...")
+
+    for i = 1, MAX_BONE_MEAL_ATTEMPTS do
+      -- Prüfen, ob der Baum gewachsen ist
+      local success, data = turtle.inspectDown()
+      if success and data and string.find(data.name, "log") then
+        print("Baum ist nach " .. (i-1) .. " Versuchen gewachsen.")
+        turtle.select(1)
+        return true
+      end
+
+      -- Knochenmehl anwenden
+      if turtle.getItemCount(BONE_MEAL_SLOT) == 0 then
+        print("Warnung: Kein Knochenmehl mehr.")
+        break
+      end
+      pcall(turtle.placeDown) -- pcall verwenden, falls es fehlschlägt
+      sleep(0.5) -- Kurze Pause, damit der Baum wachsen kann
+    end
+
+    -- Letzte Überprüfung nach der Schleife
+    local success, data = turtle.inspectDown()
+    if success and data and string.find(data.name, "log") then
+      print("Baum ist nach " .. MAX_BONE_MEAL_ATTEMPTS .. " Versuchen gewachsen.")
+      turtle.select(1)
+      return true
+    end
+
+    print("Fehler: Baum ist nach " .. MAX_BONE_MEAL_ATTEMPTS .. " Düngeversuchen nicht gewachsen.")
+    turtle.select(1)
+    return false
+  end
+
+  -- Falls kein Knochenmehl vorhanden ist, einfach erfolgreich zurückkehren
+  turtle.select(1)
   return true
 end
 
