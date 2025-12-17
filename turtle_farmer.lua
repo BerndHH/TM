@@ -1,52 +1,30 @@
 --[[
-  Farming Turtle Skript
-  Dieses Skript automatisiert das Fällen von Bäumen und das Nachpflanzen von Setzlingen.
-  Die Turtle kann über Rednet ferngesteuert werden, um eine bestimmte Anzahl von Bäumen zu fällen.
+  Farming Turtle Skript V3
+  Implementiert eine neue Fäll-Logik und optionales Warten auf natürliches Wachstum.
 --]]
 
 -- =============================================================================
 -- Konfiguration
 -- =============================================================================
 
--- -- Netzwerkeinstellungen --
 local MODEM_SIDE = "right"
-
--- -- Bewegungseinstellungen --
-local DISTANCE_TO_TREE = 4
-local STEPS_FOR_RETURN_PATH = DISTANCE_TO_TREE + 1
 local MAX_DIG_ATTEMPTS = 10
-
--- -- Inventareinstellungen --
-local SAPLING_SLOT = 5
-local BONE_MEAL_SLOT = 6
+local SAPLING_SLOT = 1
+local BONE_MEAL_SLOT = 2
 local MAX_BONE_MEAL_ATTEMPTS = 8
-
--- -- Betriebsmodi --
-local MINIMUM_FUEL_LEVEL = 100
-local CRITICAL_FUEL_LEVEL = 20
-
+local GROWTH_CHECK_INTERVAL = 10 -- Sekunden zwischen den Überprüfungen auf natürliches Wachstum
 
 -- =============================================================================
 -- Hilfsfunktionen
 -- =============================================================================
-
 local function safeMove(moveFn, detectFn, digFn)
   local attempts = 0
   while not moveFn() do
     if detectFn and detectFn() then
-      if not digFn() then
-        print("Fehler: Konnte Block nicht abbauen.")
-        return false
-      end
-      sleep(0.1)
-    else
-      sleep(0.2)
+      if not digFn() then print("Fehler: Konnte Block nicht abbauen.") return false end
     end
     attempts = attempts + 1
-    if attempts >= MAX_DIG_ATTEMPTS then
-      print("Fehler: Bewegung nach " .. MAX_DIG_ATTEMPTS .. " Versuchen abgebrochen.")
-      return false
-    end
+    if attempts >= MAX_DIG_ATTEMPTS then print("Bewegung fehlgeschlagen.") return false end
   end
   return true
 end
@@ -54,223 +32,162 @@ end
 local function safeForward() return safeMove(turtle.forward, turtle.detect, turtle.dig) end
 local function safeUp() return safeMove(turtle.up, turtle.detectUp, turtle.digUp) end
 local function safeDown() return safeMove(turtle.down, turtle.detectDown, turtle.digDown) end
-local function safeBack() return safeMove(turtle.back, turtle.detect, turtle.dig) end
+local function safeBack() return safeMove(turtle.back, nil, nil) end
 
 local function sendRednetMessage(id, message)
-  local ok, err = pcall(function()
-    rednet.send(id, message)
-  end)
-  if not ok then
-    print("Rednet-Fehler: " .. tostring(err))
-  end
+    if id then
+        local serialized_msg = textutils.serialize(message)
+        rednet.send(id, serialized_msg)
+    end
 end
 
 local function turnAround()
-  turtle.turnLeft()
-  turtle.turnLeft()
+    turtle.turnLeft()
+    turtle.turnLeft()
 end
-
 
 -- =============================================================================
 -- Kernlogik
 -- =============================================================================
 
-local function advanceToTree()
-  print("Bewege mich zum Baum...")
-  for _ = 1, DISTANCE_TO_TREE do
-    if not safeForward() then return false end
-  end
-  if not safeUp() then return false end
-
-  if turtle.detect() then
-    turtle.dig()
-  end
-
-  if not safeForward() then return false end
-  return true
-end
-
 local function fellTree()
-  print("Fälle den Baum...")
-  local height = 0
-  while turtle.detectUp() do
-    turtle.digUp()
-    if not safeUp() then return false end
-    height = height + 1
-
-    -- Überprüfen, ob der Block unter dem aktuellen ein Log ist
-    local success, data = turtle.inspectDown()
-    if not success or not data or not string.find(data.name, "log") then
-        break
+    print("Beginne mit dem Fällen des Baumes...")
+    if not turtle.detect() then
+        print("Fehler: Kein Baum vor der Turtle.")
+        return false
     end
-  end
-  print("Baum mit Höhe " .. height .. " gefällt.")
-  return height
+
+    -- Ersten Block abbauen und in Position bewegen
+    turtle.dig()
+    if not safeForward() then return false end
+
+    -- Nach oben fällen
+    local height = 1
+    while turtle.detectUp() do
+        turtle.digUp()
+        if safeUp() then
+            height = height + 1
+        end
+    end
+    print("Baum mit Höhe " .. height .. " gefällt.")
+
+    -- Zurück zum Boden
+    for _ = 1, height do
+        if not safeDown() then return false end
+    end
+
+    return true
 end
 
-local function returnToGroundLevel(treeHeight)
-  print("Kehre zum Boden zurück...")
-  for _ = 1, treeHeight do
-    if not safeDown() then return false end
-  end
-  if not safeBack() then return false end
-  return true
-end
-
-local function plantSapling()
-  -- Zuerst den Boden prüfen und Setzling pflanzen
-  if turtle.detect() then
-    print("Boden ist blockiert, kann nicht pflanzen.")
-    return false
-  end
-
-  if turtle.getItemCount(SAPLING_SLOT) == 0 then
-    print("Fehler: Keine Setzlinge mehr in Slot " .. SAPLING_SLOT)
-    return false
-  end
-
-  turtle.select(SAPLING_SLOT)
-  turtle.place()
-  print("Setzling gepflanzt.")
-
-  -- Knochenmehl verwenden, falls vorhanden
-  if turtle.getItemCount(BONE_MEAL_SLOT) > 0 then
-    turtle.select(BONE_MEAL_SLOT)
-    print("Beginne mit dem Düngen...")
-
-    for i = 1, MAX_BONE_MEAL_ATTEMPTS do
-      -- Prüfen, ob der Baum gewachsen ist
-      local success, data = turtle.inspectDown()
-      if success and data and string.find(data.name, "log") then
-        print("Baum ist nach " .. (i-1) .. " Versuchen gewachsen.")
-        turtle.select(1)
-        return true
-      end
-
-      -- Knochenmehl anwenden
-      if turtle.getItemCount(BONE_MEAL_SLOT) == 0 then
-        print("Warnung: Kein Knochenmehl mehr.")
-        break
-      end
-      pcall(turtle.placeDown) -- pcall verwenden, falls es fehlschlägt
-      sleep(0.5) -- Kurze Pause, damit der Baum wachsen kann
+local function plantAndGrow(use_bonemeal, controller_id)
+    print("Beginne mit dem Pflanzen...")
+    if turtle.detect() then
+        print("Fehler: Boden blockiert.")
+        return false
+    end
+    if turtle.getItemCount(SAPLING_SLOT) == 0 then
+        print("Fehler: Keine Setzlinge.")
+        return false
     end
 
-    -- Letzte Überprüfung nach der Schleife
-    local success, data = turtle.inspectDown()
-    if success and data and string.find(data.name, "log") then
-      print("Baum ist nach " .. MAX_BONE_MEAL_ATTEMPTS .. " Versuchen gewachsen.")
-      turtle.select(1)
-      return true
+    turtle.select(SAPLING_SLOT)
+    turtle.place()
+    print("Setzling gepflanzt.")
+
+    -- Wachstum
+    if use_bonemeal then
+        -- Knochenmehl-Logik
+        if turtle.getItemCount(BONE_MEAL_SLOT) == 0 then
+            print("Kein Knochenmehl, warte auf natürliches Wachstum.")
+            -- Fallback zu natürlichem Wachstum
+        else
+            turtle.select(BONE_MEAL_SLOT)
+            for i = 1, MAX_BONE_MEAL_ATTEMPTS do
+                local success, data = turtle.inspect()
+                if success and string.find(data.name, "log") then
+                    print("Baum nach " .. i-1 .. " Versuchen gewachsen.")
+                    turtle.select(1)
+                    return true
+                end
+                if turtle.getItemCount(BONE_MEAL_SLOT) > 0 then turtle.place() end
+                sleep(0.5)
+            end
+            local success, data = turtle.inspect()
+            if success and string.find(data.name, "log") then
+                print("Baum gewachsen.")
+                turtle.select(1)
+                return true
+            end
+            print("Fehler: Baum nach " .. MAX_BONE_MEAL_ATTEMPTS .. " Versuchen nicht gewachsen.")
+            turtle.select(1)
+            return false
+        end
     end
 
-    print("Fehler: Baum ist nach " .. MAX_BONE_MEAL_ATTEMPTS .. " Düngeversuchen nicht gewachsen.")
-    turtle.select(1)
-    return false
-  end
+    -- Logik für natürliches Wachstum
+    print("Warte auf natürliches Wachstum...")
+    sendRednetMessage(controller_id, { command = "start_waiting" })
 
-  -- Falls kein Knochenmehl vorhanden ist, einfach erfolgreich zurückkehren
-  turtle.select(1)
-  return true
+    while true do
+        sleep(GROWTH_CHECK_INTERVAL)
+        local success, data = turtle.inspect()
+        if success and string.find(data.name, "log") then
+            print("Baum ist natürlich gewachsen.")
+            sendRednetMessage(controller_id, { command = "tree_grown" })
+            turtle.select(1)
+            return true
+        end
+    end
 end
 
 local function returnToStart()
-  print("Kehre zur Startposition zurück...")
-  turnAround()
-  for _ = 1, STEPS_FOR_RETURN_PATH do
-    if not safeForward() then return false end
-  end
-  turnAround()
-  return true
+    print("Kehre zur Startposition zurück...")
+    if not safeBack() then return false end
+    return true
 end
-
-local function checkPrerequisites()
-  if turtle.getFuelLevel() < CRITICAL_FUEL_LEVEL then
-    print("Kritischer Treibstoffmangel. Breche ab.")
-    return false
-  end
-  if turtle.getItemCount(SAPLING_SLOT) == 0 then
-    print("Keine Setzlinge in Slot " .. SAPLING_SLOT .. ". Breche ab.")
-    return false
-  end
-  print("Voraussetzungen geprüft. Starte...")
-  return true
-end
-
 
 -- =============================================================================
 -- Hauptprogramm
 -- =============================================================================
-local function runFarmingCycles(numberOfCycles)
-  if not checkPrerequisites() then
-    return false
-  end
+local function runFarmingCycles(task)
+  sendRednetMessage(task.controller_id, "Befehl erhalten. Starte " .. task.count .. " Zyklen.")
 
-  for i = 1, numberOfCycles do
-    print("Starte Zyklus " .. i .. " von " .. numberOfCycles)
+  for i = 1, task.count do
+    sendRednetMessage(task.controller_id, "Starte Zyklus " .. i .. "/" .. task.count)
 
-    if turtle.getFuelLevel() < MINIMUM_FUEL_LEVEL then
-      print("Warnung: Geringer Treibstoffstand!")
-      if turtle.getFuelLevel() < CRITICAL_FUEL_LEVEL then
-        print("Kritischer Treibstoffmangel. Breche Arbeit ab.")
-        return false
-      end
-    end
-
-    if not advanceToTree() then return false end
-
-    local treeHeight = fellTree()
-    if treeHeight == nil then return false end
-
-    if not returnToGroundLevel(treeHeight) then return false end
-    if not plantSapling() then return false end
+    if not fellTree() then return false end
+    if not plantAndGrow(task.use_bonemeal, task.controller_id) then return false end
     if not returnToStart() then return false end
 
-    print("Zyklus " .. i .. " abgeschlossen.")
-    sleep(1)
+    sendRednetMessage(task.controller_id, "Zyklus " .. i .. " abgeschlossen.")
   end
 
-  print("Alle Zyklen abgeschlossen.")
   return true
 end
-
 
 -- =============================================================================
 -- Rednet Command Listener
 -- =============================================================================
 local function listenForCommands()
-  print("Initialisiere Rednet-Empfänger...")
   rednet.open(MODEM_SIDE)
-  print("Warte auf Rednet-Befehle auf der Seite: " .. MODEM_SIDE)
+  print("Warte auf Befehle...")
 
   while true do
-    local senderId, message = rednet.receive()
+    local senderId, message_str = rednet.receive()
+    local task, err = textutils.unserialize(message_str)
 
-    print("Nachricht von ID " .. senderId .. " erhalten: '" .. tostring(message) .. "'")
-
-    local numCycles = tonumber(message)
-
-    if numCycles and numCycles > 0 and math.floor(numCycles) == numCycles then
-      print("Gültiger Befehl: Führe " .. numCycles .. " Zyklen aus.")
-
-      -- Bestätigungsnachricht senden
-      sendRednetMessage(senderId, "Befehl erhalten. Starte " .. numCycles .. " Farm-Zyklen.")
-
-      local success = runFarmingCycles(numCycles)
-
+    if type(task) == "table" and task.command == "farm" then
+      local controller_id_to_reply = task.controller_id or senderId
+      local success = runFarmingCycles(task)
       if success then
-        sendRednetMessage(senderId, "Aufgabe erfolgreich abgeschlossen.")
+        sendRednetMessage(controller_id_to_reply, "Aufgabe erfolgreich abgeschlossen.")
       else
-        sendRednetMessage(senderId, "Aufgabe aufgrund eines Fehlers abgebrochen.")
+        sendRednetMessage(controller_id_to_reply, "Aufgabe aufgrund eines Fehlers abgebrochen.")
       end
-
-      print("Warte auf neuen Befehl.")
     else
-      print("Ungültiger Befehl. Muss eine positive Ganzzahl sein.")
-      sendRednetMessage(senderId, "Fehler: Ungültiger Befehl. Bitte senden Sie eine positive Ganzzahl.")
+      sendRednetMessage(senderId, "Fehler: Ungültiger Befehl.")
     end
   end
 end
 
--- Starte den Befehlsempfänger
 listenForCommands()
